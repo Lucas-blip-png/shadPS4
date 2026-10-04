@@ -937,6 +937,10 @@ static constexpr float kTwoFingerLeftX = 0.08f;
 static constexpr float kTwoFingerRightX = 0.92f;
 static constexpr Uint32 kTwoFingerClickDelayMs = 50;
 static std::atomic<u32> g_two_finger_gen{0};
+// touchpad_stick: right stick drags touch index 0 while the output is held.
+static std::atomic_bool touchpad_stick_held{false};
+static std::atomic<s32> touchpad_stick_x{0};
+static std::atomic<s32> touchpad_stick_y{0};
 static std::atomic<GameController*> g_two_finger_controller{nullptr};
 
 static Uint32 TwoFingerClickCallback(void* param, SDL_TimerID, Uint32) {
@@ -1040,6 +1044,14 @@ void ControllerOutput::FinalizeUpdate(u8 gamepad_index) {
             if (new_button_state) {
                 TriggerButtonSwipe(controller, BUTTON_SWIPE_RIGHT);
             }
+            break;
+        case SDL_GAMEPAD_BUTTON_TOUCHPAD_STICK:
+            // While held, the right stick drags touch index 0 freely (diagonals included)
+            // instead of moving the camera; the finger starts at the centre.
+            touchpad_stick_held = new_button_state;
+            touchpad_stick_x = 0;
+            touchpad_stick_y = 0;
+            controller->SetTouchpadState(0, new_button_state, 0.5f, 0.5f);
             break;
         case SDL_GAMEPAD_BUTTON_TOUCHPAD_SWIPE:
             // One button for every swipe: follow the right stick (camera, so the player stays at
@@ -1168,6 +1180,18 @@ void ControllerOutput::FinalizeUpdate(u8 gamepad_index) {
         case Axis::RightY:
             ApplyDeadzone(new_param, rightjoystick_deadzone[gamepad_index]);
             multiplier = rightjoystick_halfmode ? 0.5 : 1.0;
+            if (touchpad_stick_held) {
+                (c_axis == Axis::RightX ? touchpad_stick_x : touchpad_stick_y) = *new_param;
+                // Sliding should not look like a click to the game.
+                if (*new_param != 0) {
+                    controller->Button(OrbisPadButtonDataOffset::TouchPad, false);
+                }
+                constexpr float range = 0.45f;
+                controller->SetTouchpadState(0, true, 0.5f + touchpad_stick_x / 128.0f * range,
+                                             0.5f + touchpad_stick_y / 128.0f * range);
+                controller->Axis(c_axis, GetAxis(-0x80, 0x7f, 0));
+                return;
+            }
             break;
         case Axis::TriggerLeft:
             ApplyDeadzone(new_param, lefttrigger_deadzone[gamepad_index]);

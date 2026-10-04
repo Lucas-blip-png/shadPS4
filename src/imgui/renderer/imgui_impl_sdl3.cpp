@@ -3,7 +3,9 @@
 
 // Based on imgui_impl_sdl3.cpp from Dear ImGui repository
 
+#include <algorithm>
 #include <imgui.h>
+#include "common/logging/log.h"
 #include "core/debug_state.h"
 #include "core/emulator_settings.h"
 #include "core/memory.h"
@@ -840,6 +842,24 @@ void NewFrame(bool is_reusing_frame) {
         framerateSec = deltaTime;
         frameIdx = (frameIdx + 1) % count;
         DebugState.Framerate = acc > 0.0f ? 1.0f / (acc / (float)count) : FLT_MAX;
+
+        // Fork-only: FPS, worst frame and >50 ms hitches every 5 s for long-session analysis.
+        static float fps_log_timer = 0.0f;
+        static int fps_log_frames = 0;
+        static float fps_log_worst = 0.0f;
+        static int fps_log_hitches = 0;
+        fps_log_timer += deltaTime;
+        fps_log_frames++;
+        fps_log_worst = std::max(fps_log_worst, deltaTime);
+        fps_log_hitches += deltaTime > 0.05f;
+        if (fps_log_timer >= 5.0f) {
+            LOG_INFO(Frontend, "BENCH_FPS {:.1f} worst_ms {:.0f} hitches {}",
+                     fps_log_frames / fps_log_timer, fps_log_worst * 1000.0f, fps_log_hitches);
+            fps_log_timer = 0.0f;
+            fps_log_frames = 0;
+            fps_log_worst = 0.0f;
+            fps_log_hitches = 0;
+        }
     }
 
     if (bd->mouse_pending_leave_frame && bd->mouse_pending_leave_frame >= ImGui::GetFrameCount() &&
