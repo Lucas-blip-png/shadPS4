@@ -941,6 +941,31 @@ static std::atomic<u32> g_two_finger_gen{0};
 static std::atomic_bool touchpad_stick_held{false};
 static std::atomic<s32> touchpad_stick_x{0};
 static std::atomic<s32> touchpad_stick_y{0};
+static std::atomic<GameController*> touchpad_stick_controller{nullptr};
+static float touchpad_stick_pos_x = 0.5f; // only touched by the timer callback
+static float touchpad_stick_pos_y = 0.5f;
+
+// The stick acts like a mouse: it pushes the finger, which stays where it was left, so shapes
+// can be traced. Runs every 8 ms while the output is held.
+static Uint32 TouchpadStickTick(void*, SDL_TimerID, Uint32 interval) {
+    auto* controller = touchpad_stick_controller.load();
+    if (!touchpad_stick_held || !controller) {
+        return 0;
+    }
+    constexpr float speed = 1.2f; // pad widths per second at full deflection
+    const float dt = interval / 1000.0f;
+    touchpad_stick_pos_x =
+        std::clamp(touchpad_stick_pos_x + touchpad_stick_x / 128.0f * speed * dt, 0.02f, 0.98f);
+    touchpad_stick_pos_y =
+        std::clamp(touchpad_stick_pos_y + touchpad_stick_y / 128.0f * speed * dt, 0.02f, 0.98f);
+    controller->SetTouchpadState(0, true, touchpad_stick_pos_x, touchpad_stick_pos_y);
+    if (!touchpad_stick_held) {
+        // Released while this tick ran: make sure the finger is lifted.
+        controller->SetTouchpadState(0, false, touchpad_stick_pos_x, touchpad_stick_pos_y);
+        return 0;
+    }
+    return interval;
+}
 static std::atomic<GameController*> g_two_finger_controller{nullptr};
 
 static Uint32 TwoFingerClickCallback(void* param, SDL_TimerID, Uint32) {
@@ -1047,11 +1072,21 @@ void ControllerOutput::FinalizeUpdate(u8 gamepad_index) {
             break;
         case SDL_GAMEPAD_BUTTON_TOUCHPAD_STICK:
             // While held, the right stick drags touch index 0 freely (diagonals included)
-            // instead of moving the camera; the finger starts at the centre.
-            touchpad_stick_held = new_button_state;
+            // instead of moving the camera; the finger starts at the centre and moves like a mouse.
             touchpad_stick_x = 0;
             touchpad_stick_y = 0;
-            controller->SetTouchpadState(0, new_button_state, 0.5f, 0.5f);
+            if (new_button_state) {
+                touchpad_stick_pos_x = 0.5f;
+                touchpad_stick_pos_y = 0.5f;
+                touchpad_stick_controller = controller;
+                controller->SetTouchpadState(0, true, 0.5f, 0.5f);
+                if (!touchpad_stick_held.exchange(true)) {
+                    SDL_AddTimer(8, TouchpadStickTick, nullptr);
+                }
+            } else {
+                touchpad_stick_held = false;
+                controller->SetTouchpadState(0, false, touchpad_stick_pos_x, touchpad_stick_pos_y);
+            }
             break;
         case SDL_GAMEPAD_BUTTON_TOUCHPAD_SWIPE:
             // One button for every swipe: follow the right stick (camera, so the player stays at
@@ -1186,9 +1221,6 @@ void ControllerOutput::FinalizeUpdate(u8 gamepad_index) {
                 if (*new_param != 0) {
                     controller->Button(OrbisPadButtonDataOffset::TouchPad, false);
                 }
-                constexpr float range = 0.45f;
-                controller->SetTouchpadState(0, true, 0.5f + touchpad_stick_x / 128.0f * range,
-                                             0.5f + touchpad_stick_y / 128.0f * range);
                 controller->Axis(c_axis, GetAxis(-0x80, 0x7f, 0));
                 return;
             }
