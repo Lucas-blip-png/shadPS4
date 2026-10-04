@@ -11,6 +11,9 @@
 #include <fmt/core.h>
 #include <fmt/xchar.h>
 #include <hwinfo/hwinfo.h>
+#ifdef _WIN32
+#include <xbyak/xbyak_util.h>
+#endif
 
 #include "common/debug.h"
 #include "common/logging/log.h"
@@ -621,8 +624,16 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
     }
 
 #ifdef _WIN32
+    // Without SSE4a (Intel CPUs) inFAMOUS Second Son only reaches gameplay with red-zone patching
+    // (shadPS4 issue 4387), so it defaults on there unless the game config sets it.
+    const bool redzone_title_default = (id == "CUSA00004" || id == "CUSA00223") &&
+                                       !EmulatorSettings.HasGameRedZonePatchingOverride() &&
+                                       !Xbyak::util::Cpu().has(Xbyak::util::Cpu::tSSE4a);
+    if (redzone_title_default) {
+        LOG_INFO(Config, "Enabling red-zone patching for this title on a CPU without SSE4a");
+    }
     // Enable red-zone patching if the setting is enabled
-    if (EmulatorSettings.IsRedZonePatchingEnabled()) {
+    if (EmulatorSettings.IsRedZonePatchingEnabled() || redzone_title_default) {
         WindowsGuestRedZoneProtection::SetActiveMode(
             WindowsGuestRedZoneProtectionMode::StaticPatching);
     }

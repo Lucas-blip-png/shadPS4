@@ -1106,6 +1106,9 @@ public:
     SETTING_FORWARD(m_general, SignalingInfo, signaling_info)
     SETTING_FORWARD_BOOL(m_general, UPnPEnabled, enable_upnp)
     SETTING_FORWARD_BOOL(m_general, RedZonePatchingEnabled, redzone_patches)
+    bool HasGameRedZonePatchingOverride() const {
+        return m_general.redzone_patches.game_specific_value.has_value();
+    }
 
     // Log settings
     SETTING_FORWARD_BOOL(m_log, LogAppend, append)
