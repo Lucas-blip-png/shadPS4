@@ -1079,12 +1079,15 @@ void ControllerOutput::FinalizeUpdate(u8 gamepad_index) {
                 touchpad_stick_pos_x = 0.5f;
                 touchpad_stick_pos_y = 0.5f;
                 touchpad_stick_controller = controller;
+                // Also acts as touchpad_center: a plain press is a centre tap with the click.
                 controller->SetTouchpadState(0, true, 0.5f, 0.5f);
+                controller->Button(OrbisPadButtonDataOffset::TouchPad, true);
                 if (!touchpad_stick_held.exchange(true)) {
                     SDL_AddTimer(8, TouchpadStickTick, nullptr);
                 }
             } else {
                 touchpad_stick_held = false;
+                controller->Button(OrbisPadButtonDataOffset::TouchPad, false);
                 controller->SetTouchpadState(0, false, touchpad_stick_pos_x, touchpad_stick_pos_y);
             }
             break;
