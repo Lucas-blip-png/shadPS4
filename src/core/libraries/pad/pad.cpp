@@ -417,15 +417,6 @@ int ProcessStates(OrbisPadData* pData, const Input::State* states, s32 num) {
             pData[i].touchData.touch[1].y = states[i].touchpad[1].y;
             pData[i].touchData.touch[1].id = states[i].touchpad[1].ID;
         }
-        // DEBUG (temporary): what the game reads while a finger is down, and the lift.
-        static u8 debug_last_touch_num = 0;
-        if (pData[i].touchData.touchNum || debug_last_touch_num) {
-            const auto& t = pData[i].touchData.touch;
-            LOG_INFO(Lib_Pad, "touch n={} t0=({},{}) id={} t1=({},{}) id={} buttons={:#x}",
-                     pData[i].touchData.touchNum, t[0].x, t[0].y, t[0].id, t[1].x, t[1].y, t[1].id,
-                     std::to_underlying(pData[i].buttons));
-        }
-        debug_last_touch_num = pData[i].touchData.touchNum;
         if (Common::ElfInfo::Instance().FirmwareVer() > Common::ElfInfo::FW_350) {
             pData[i].touchData.time_since_touch_held_down = states[i].touch_time_since_held_down;
         }
