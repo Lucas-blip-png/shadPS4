@@ -44,6 +44,8 @@ void SetTouchpadSwipeButtonDelay(int delay_ms);
 // One-shot timed swipe: touch down at (0.5, 0.5) with the TouchPad button, move to the
 // direction's edge after the delay, release after the hold. Ignored while a swipe is in flight.
 void TriggerButtonSwipe(GameController* controller, int direction);
+// True while a button-triggered swipe owns touch index 0.
+bool IsButtonSwipeActive();
 
 void EmulateJoystick(GameController* controller, u32 interval);
 void EmulateGyro(GameController* controller, u32 interval);

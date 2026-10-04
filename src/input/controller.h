@@ -105,6 +105,7 @@ public:
     void PollLightColour();
     bool SetVibration(u8 smallMotor, u8 largeMotor);
     void SetTouchpadState(int touchIndex, bool touchDown, float x, float y);
+    std::pair<int, int> GetRightStick();
     // Synthetic motion for controllers without motion sensors. While active, it overrides the
     // gyro and accelerometer readings. direction: +1 tilts left, -1 tilts right.
     void SetMotionTilt(int direction, bool active);

@@ -134,6 +134,12 @@ void GameController::ResetOrientation() {
     PushStateLocked();
 }
 
+std::pair<int, int> GameController::GetRightStick() {
+    std::lock_guard lock{m_state_mutex};
+    return {m_state.axes[static_cast<int>(Axis::RightX)],
+            m_state.axes[static_cast<int>(Axis::RightY)]};
+}
+
 void GameController::SetTouchpadState(int touch_index, bool touch_down, float x, float y) {
     if (touch_index < 0 || touch_index >= 2) {
         return;

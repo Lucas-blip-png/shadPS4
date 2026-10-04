@@ -94,6 +94,10 @@ void SetTouchpadSwipeButtonDelay(int delay_ms) {
     g_button_swipe_delay_ms.store(std::max(delay_ms, 1), std::memory_order_release);
 }
 
+bool IsButtonSwipeActive() {
+    return g_button_swipe.active.load(std::memory_order_acquire);
+}
+
 void TriggerButtonSwipe(GameController* controller, int direction) {
     if (!controller || direction < 0 || direction > 3) {
         return;
