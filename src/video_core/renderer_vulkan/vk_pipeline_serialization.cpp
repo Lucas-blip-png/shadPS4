@@ -338,9 +338,22 @@ void PipelineCache::WarmUp() {
 
     Storage::DataBase::Instance().Open();
 
-    // Check if cache is compatible
+    // Check if cache is compatible, otherwise wipe it so it gets rebuilt
     std::vector<u8> profile_data{};
     Storage::DataBase::Instance().Load(Storage::BlobType::ShaderProfile, "profile", profile_data);
+    if (!profile_data.empty()) {
+        Shader::Profile cached_profile{};
+        const bool same_size = profile_data.size() == sizeof(cached_profile);
+        if (same_size) {
+            std::memcpy(&cached_profile, profile_data.data(), sizeof(cached_profile));
+        }
+        if (!same_size || cached_profile != profile) {
+            LOG_WARNING(Render,
+                        "Pipeline cache isn't compatible with current system. Rebuilding it");
+            Storage::DataBase::Instance().Clear();
+            profile_data.clear();
+        }
+    }
     if (profile_data.empty()) {
         Storage::DataBase::Instance().FinishPreload();
 
@@ -348,22 +361,6 @@ void PipelineCache::WarmUp() {
         std::memcpy(profile_data.data(), &profile, sizeof(profile));
         Storage::DataBase::Instance().Save(Storage::BlobType::ShaderProfile, "profile",
                                            std::move(profile_data));
-        return;
-    }
-    if (profile_data.size() != sizeof(Shader::Profile)) {
-        LOG_WARNING(Render,
-                    "Pipeline cache profile has unexpected size ({} != {}). Ignoring the cache",
-                    profile_data.size(), sizeof(Shader::Profile));
-        Storage::DataBase::Instance().Close();
-        return;
-    }
-
-    Shader::Profile cached_profile{};
-    std::memcpy(&cached_profile, profile_data.data(), sizeof(cached_profile));
-    if (cached_profile != profile) {
-        LOG_WARNING(Render,
-                    "Pipeline cache isn't compatible with current system. Ignoring the cache");
-        Storage::DataBase::Instance().Close();
         return;
     }
 
