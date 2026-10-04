@@ -46,52 +46,57 @@ float swipe_end_x = 0.5f, swipe_end_y = 0.5f;
 int swipe_frame_counter = 0;
 
 // Button-triggered swipe, driven by SDL_AddTimer so its timing does not depend on MousePolling:
-// touch down at the centre, touch down at the endpoint after the delay, then release all.
+// touch down at the start point, wait the delay, slide to the end point in small steps, lift.
+// Games read the pad once per frame, so the finger has to be seen moving over several frames;
+// a jump between two points, or a held TouchPad click, reads as a tap or a press instead.
 namespace {
 
-constexpr int kButtonSwipeDefaultDelayMs = 200;
-constexpr int kButtonSwipeHoldMs = 100;
+constexpr int kButtonSwipeDefaultDelayMs = 16;
+constexpr int kButtonSwipeSteps = 10;
+constexpr Uint32 kButtonSwipeStepMs = 16;
 
-// Endpoints in normalized (x, y), matching the touchpad_* region outputs.
-constexpr float kButtonSwipeEndpoints[4][2] = {
-    {0.5f, 0.25f}, // BUTTON_SWIPE_UP
-    {0.5f, 0.75f}, // BUTTON_SWIPE_DOWN
-    {0.25f, 0.5f}, // BUTTON_SWIPE_LEFT
-    {0.75f, 0.5f}, // BUTTON_SWIPE_RIGHT
+// Start (x, y) and end (x, y), normalized, y = 0 at the top. The pad is about half as tall as
+// it is wide, so vertical swipes use nearly the full height to travel as far as horizontal ones.
+constexpr float kButtonSwipePaths[4][4] = {
+    {0.5f, 0.95f, 0.5f, 0.05f}, // BUTTON_SWIPE_UP
+    {0.5f, 0.05f, 0.5f, 0.95f}, // BUTTON_SWIPE_DOWN
+    {0.8f, 0.5f, 0.2f, 0.5f},   // BUTTON_SWIPE_LEFT
+    {0.2f, 0.5f, 0.8f, 0.5f},   // BUTTON_SWIPE_RIGHT
 };
 
 std::atomic<int> g_button_swipe_delay_ms{kButtonSwipeDefaultDelayMs};
 
 struct ButtonSwipeState {
     int direction = 0;
+    int step = 0;
     std::atomic<bool> active{false};
 };
 ButtonSwipeState g_button_swipe;
 
-Uint32 ButtonSwipeReleaseCallback(void* param, SDL_TimerID /*id*/, Uint32 /*interval*/) {
+// Repeats every kButtonSwipeStepMs until the finger reaches the end point, then lifts it.
+Uint32 ButtonSwipeStepCallback(void* param, SDL_TimerID /*id*/, Uint32 /*interval*/) {
     auto* controller = static_cast<GameController*>(param);
-    const int dir = g_button_swipe.direction;
-    controller->SetTouchpadState(0, false, kButtonSwipeEndpoints[dir][0],
-                                 kButtonSwipeEndpoints[dir][1]);
-    controller->Button(Libraries::Pad::OrbisPadButtonDataOffset::TouchPad, false);
-    g_button_swipe.active.store(false, std::memory_order_release);
-    return 0; // one-shot
-}
-
-Uint32 ButtonSwipeMoveCallback(void* param, SDL_TimerID /*id*/, Uint32 /*interval*/) {
-    auto* controller = static_cast<GameController*>(param);
-    const int dir = g_button_swipe.direction;
-    // The touch stays down; only the contact point moves.
-    controller->SetTouchpadState(0, true, kButtonSwipeEndpoints[dir][0],
-                                 kButtonSwipeEndpoints[dir][1]);
-    SDL_AddTimer(kButtonSwipeHoldMs, ButtonSwipeReleaseCallback, param);
-    return 0; // one-shot
+    const float* path = kButtonSwipePaths[g_button_swipe.direction];
+    const int step = ++g_button_swipe.step;
+    if (step > kButtonSwipeSteps) {
+        controller->SetTouchpadState(0, false, path[2], path[3]);
+        g_button_swipe.active.store(false, std::memory_order_release);
+        return 0;
+    }
+    const float t = static_cast<float>(step) / kButtonSwipeSteps;
+    controller->SetTouchpadState(0, true, path[0] + (path[2] - path[0]) * t,
+                                 path[1] + (path[3] - path[1]) * t);
+    return kButtonSwipeStepMs;
 }
 
 } // namespace
 
 void SetTouchpadSwipeButtonDelay(int delay_ms) {
     g_button_swipe_delay_ms.store(std::max(delay_ms, 1), std::memory_order_release);
+}
+
+bool IsButtonSwipeActive() {
+    return g_button_swipe.active.load(std::memory_order_acquire);
 }
 
 void TriggerButtonSwipe(GameController* controller, int direction) {
@@ -104,15 +109,14 @@ void TriggerButtonSwipe(GameController* controller, int direction) {
         return;
     }
     g_button_swipe.direction = direction;
-    // Phase 0: touch down at the centre.
-    controller->SetTouchpadState(0, true, 0.5f, 0.5f);
-    controller->Button(Libraries::Pad::OrbisPadButtonDataOffset::TouchPad, true);
+    g_button_swipe.step = 0;
+    const float* path = kButtonSwipePaths[direction];
+    controller->SetTouchpadState(0, true, path[0], path[1]);
     const int delay_ms = g_button_swipe_delay_ms.load(std::memory_order_acquire);
-    if (SDL_AddTimer(static_cast<Uint32>(delay_ms), ButtonSwipeMoveCallback,
+    if (SDL_AddTimer(static_cast<Uint32>(delay_ms), ButtonSwipeStepCallback,
                      static_cast<void*>(controller)) == 0) {
         LOG_ERROR(Input, "TriggerButtonSwipe: SDL_AddTimer failed, releasing immediately");
-        controller->SetTouchpadState(0, false, 0.5f, 0.5f);
-        controller->Button(Libraries::Pad::OrbisPadButtonDataOffset::TouchPad, false);
+        controller->SetTouchpadState(0, false, path[0], path[1]);
         g_button_swipe.active.store(false, std::memory_order_release);
     }
 }

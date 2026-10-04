@@ -135,7 +135,7 @@ override_controller_color = false, 0, 0, 255
 # hotkey_toggle_mouse_to_touchpad_swipe. Threshold is the minimum drag in pixels.
 # touchpad_swipe_enabled = false
 # touchpad_swipe_threshold = 15
-# touchpad_swipe_button_delay = 200
+# touchpad_swipe_button_delay = 16
 # Hold-combo swipes: while the hold input is held, the four inputs play back touchpad swipes
 # instead of their normal mappings (hold_passthrough keeps the hold input's own mappings live)
 # touchpad_swipe_combo_enabled = false
@@ -972,16 +972,25 @@ void ControllerOutput::FinalizeUpdate(u8 gamepad_index) {
     if (button != SDL_GAMEPAD_BUTTON_INVALID) {
         switch (button) {
         case SDL_GAMEPAD_BUTTON_TOUCHPAD_LEFT:
-            controller->SetTouchpadState(0, new_button_state, 0.25f, 0.5f);
-            controller->Button(SDLGamepadToOrbisButton(button), new_button_state);
+            // A running button swipe owns touch index 0; the tap is often its modifier.
+            if (!IsButtonSwipeActive()) {
+                controller->SetTouchpadState(0, new_button_state, 0.25f, 0.5f);
+                controller->Button(SDLGamepadToOrbisButton(button), new_button_state);
+            }
             break;
         case SDL_GAMEPAD_BUTTON_TOUCHPAD_CENTER:
-            controller->SetTouchpadState(0, new_button_state, 0.50f, 0.5f);
-            controller->Button(SDLGamepadToOrbisButton(button), new_button_state);
+            // A running button swipe owns touch index 0; the tap is often its modifier.
+            if (!IsButtonSwipeActive()) {
+                controller->SetTouchpadState(0, new_button_state, 0.50f, 0.5f);
+                controller->Button(SDLGamepadToOrbisButton(button), new_button_state);
+            }
             break;
         case SDL_GAMEPAD_BUTTON_TOUCHPAD_RIGHT:
-            controller->SetTouchpadState(0, new_button_state, 0.75f, 0.5f);
-            controller->Button(SDLGamepadToOrbisButton(button), new_button_state);
+            // A running button swipe owns touch index 0; the tap is often its modifier.
+            if (!IsButtonSwipeActive()) {
+                controller->SetTouchpadState(0, new_button_state, 0.75f, 0.5f);
+                controller->Button(SDLGamepadToOrbisButton(button), new_button_state);
+            }
             break;
         case SDL_GAMEPAD_BUTTON_TOUCHPAD_UP:
             controller->SetTouchpadState(0, new_button_state, 0.5f, 0.25f);
@@ -1030,6 +1039,21 @@ void ControllerOutput::FinalizeUpdate(u8 gamepad_index) {
         case SDL_GAMEPAD_BUTTON_TOUCHPAD_SWIPE_RIGHT:
             if (new_button_state) {
                 TriggerButtonSwipe(controller, BUTTON_SWIPE_RIGHT);
+            }
+            break;
+        case SDL_GAMEPAD_BUTTON_TOUCHPAD_SWIPE:
+            // One button for every swipe: follow the right stick (camera, so the player stays at
+            // the prompt) when pushed, otherwise swipe right.
+            if (new_button_state) {
+                const auto [rx, ry] = controller->GetRightStick();
+                const int dx = rx - 128, dy = ry - 128;
+                int dir = BUTTON_SWIPE_RIGHT;
+                if (std::max(std::abs(dx), std::abs(dy)) >= 64) {
+                    dir = std::abs(dx) >= std::abs(dy)
+                              ? (dx > 0 ? BUTTON_SWIPE_RIGHT : BUTTON_SWIPE_LEFT)
+                              : (dy > 0 ? BUTTON_SWIPE_DOWN : BUTTON_SWIPE_UP);
+                }
+                TriggerButtonSwipe(controller, dir);
             }
             break;
         case LEFTJOYSTICK_HALFMODE:
@@ -1106,6 +1130,15 @@ void ControllerOutput::FinalizeUpdate(u8 gamepad_index) {
             break;
         case MOUSE_GYRO_ROLL_MODE:
             SetMouseGyroRollMode(new_button_state);
+            break;
+        case MOTION_TILT_LEFT:
+            controller->SetMotionTilt(1, new_button_state);
+            break;
+        case MOTION_TILT_RIGHT:
+            controller->SetMotionTilt(-1, new_button_state);
+            break;
+        case MOTION_SHAKE:
+            controller->SetMotionShake(new_button_state);
             break;
         default: // is a normal key (hopefully)
             controller->Button(SDLGamepadToOrbisButton(button), new_button_state);

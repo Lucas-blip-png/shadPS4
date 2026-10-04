@@ -30,15 +30,16 @@
 #define SDL_GAMEPAD_BUTTON_TOUCHPAD_UP SDL_GAMEPAD_BUTTON_COUNT + 4
 #define SDL_GAMEPAD_BUTTON_TOUCHPAD_DOWN SDL_GAMEPAD_BUTTON_COUNT + 5
 
-// Synthetic touchpad-swipe outputs, bindable like buttons. A rising edge plays back a timed
-// touch down at (0.5, 0.5) with the TouchPad button, a move to the direction endpoint after
-// `touchpad_swipe_button_delay` (default 200 ms), then a release.
+// Synthetic touchpad-swipe outputs, bindable like buttons. A rising edge plays back a finger
+// touching down near one edge, resting `touchpad_swipe_button_delay` (default 16 ms), then
+// sliding across the pad in ten 16 ms steps and lifting, without the TouchPad click.
 #define SDL_GAMEPAD_BUTTON_TOUCHPAD_SWIPE_UP SDL_GAMEPAD_BUTTON_COUNT + 6
 #define SDL_GAMEPAD_BUTTON_TOUCHPAD_SWIPE_DOWN SDL_GAMEPAD_BUTTON_COUNT + 7
 #define SDL_GAMEPAD_BUTTON_TOUCHPAD_SWIPE_LEFT SDL_GAMEPAD_BUTTON_COUNT + 8
 #define SDL_GAMEPAD_BUTTON_TOUCHPAD_SWIPE_RIGHT SDL_GAMEPAD_BUTTON_COUNT + 9
 // Two fingers down at once, one on the left half and one on the right half, with the click.
 #define SDL_GAMEPAD_BUTTON_TOUCHPAD_TWO_FINGER SDL_GAMEPAD_BUTTON_COUNT + 10
+#define SDL_GAMEPAD_BUTTON_TOUCHPAD_SWIPE SDL_GAMEPAD_BUTTON_COUNT + 11
 
 #define SDL_EVENT_TOGGLE_FULLSCREEN SDL_EVENT_USER + 1
 #define SDL_EVENT_TOGGLE_PAUSE SDL_EVENT_USER + 2
@@ -63,6 +64,9 @@
 
 #define KEY_TOGGLE 0x00200000
 #define MOUSE_GYRO_ROLL_MODE 0x00400000
+#define MOTION_TILT_LEFT 0x00800000
+#define MOTION_TILT_RIGHT 0x01000000
+#define MOTION_SHAKE 0x02000000
 
 #define HOTKEY_FULLSCREEN 0xf0000001
 #define HOTKEY_PAUSE 0xf0000002
@@ -157,14 +161,18 @@ const std::map<std::string, u32> string_to_cbutton_map = {
     {"touchpad_up", SDL_GAMEPAD_BUTTON_TOUCHPAD_UP},
     {"touchpad_down", SDL_GAMEPAD_BUTTON_TOUCHPAD_DOWN},
     // synthetic touchpad-swipe outputs (output only): pressing the bound input plays back
-    // centre -> direction -> release
+    // touch down -> slide -> release
     {"touchpad_swipe_up", SDL_GAMEPAD_BUTTON_TOUCHPAD_SWIPE_UP},
     {"touchpad_swipe_down", SDL_GAMEPAD_BUTTON_TOUCHPAD_SWIPE_DOWN},
     {"touchpad_swipe_left", SDL_GAMEPAD_BUTTON_TOUCHPAD_SWIPE_LEFT},
     {"touchpad_swipe_right", SDL_GAMEPAD_BUTTON_TOUCHPAD_SWIPE_RIGHT},
+    {"touchpad_swipe", SDL_GAMEPAD_BUTTON_TOUCHPAD_SWIPE},
     {"touchpad_two_finger", SDL_GAMEPAD_BUTTON_TOUCHPAD_TWO_FINGER},
     {"leftjoystick_halfmode", LEFTJOYSTICK_HALFMODE},
     {"rightjoystick_halfmode", RIGHTJOYSTICK_HALFMODE},
+    {"motion_tilt_left", MOTION_TILT_LEFT},
+    {"motion_tilt_right", MOTION_TILT_RIGHT},
+    {"motion_shake", MOTION_SHAKE},
 
     // this is only for input
     {"back", SDL_GAMEPAD_BUTTON_BACK},
@@ -564,7 +572,7 @@ public:
 
 class ControllerAllOutputs {
 public:
-    static constexpr u64 output_count = 51;
+    static constexpr u64 output_count = 55;
     std::array<ControllerOutput, output_count> data = {
         // Important: these have to be the first, or else they will update in the wrong order
         ControllerOutput(LEFTJOYSTICK_HALFMODE),
@@ -591,11 +599,17 @@ public:
         ControllerOutput(SDL_GAMEPAD_BUTTON_TOUCHPAD_SWIPE_DOWN),
         ControllerOutput(SDL_GAMEPAD_BUTTON_TOUCHPAD_SWIPE_LEFT),
         ControllerOutput(SDL_GAMEPAD_BUTTON_TOUCHPAD_SWIPE_RIGHT),
+        ControllerOutput(SDL_GAMEPAD_BUTTON_TOUCHPAD_SWIPE),
         ControllerOutput(SDL_GAMEPAD_BUTTON_TOUCHPAD_TWO_FINGER),
         ControllerOutput(SDL_GAMEPAD_BUTTON_DPAD_UP),    // Up
         ControllerOutput(SDL_GAMEPAD_BUTTON_DPAD_DOWN),  // Down
         ControllerOutput(SDL_GAMEPAD_BUTTON_DPAD_LEFT),  // Left
         ControllerOutput(SDL_GAMEPAD_BUTTON_DPAD_RIGHT), // Right
+
+        // Synthetic motion for controllers without motion sensors
+        ControllerOutput(MOTION_TILT_LEFT),
+        ControllerOutput(MOTION_TILT_RIGHT),
+        ControllerOutput(MOTION_SHAKE),
 
         // Axis mappings
         // ControllerOutput(SDL_GAMEPAD_BUTTON_INVALID, SDL_GAMEPAD_AXIS_LEFTX, false),
