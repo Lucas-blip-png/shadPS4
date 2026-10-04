@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <atomic>
 #include <bit>
 #include <cstring>
 #include <limits>
@@ -1587,12 +1588,26 @@ Shader::ShaderParams PipelineCache::ResolveParams(SwStage l_stage, const Pgm& pg
         }
     }
     ++params_misses;
-    const auto& bininfo = AmdGpu::SearchBinaryInfo(code);
+    const auto* bininfo = AmdGpu::SearchBinaryInfo(code);
+    if (!bininfo) {
+        id.code = nullptr;
+        return {.user_data = pgm.user_data, .code = {}, .hash = 0};
+    }
     id.code = code;
-    id.hash_ptr = &bininfo.shader_hash;
-    id.hash = bininfo.shader_hash;
-    id.len_dw = bininfo.length / sizeof(u32);
+    id.hash_ptr = &bininfo->shader_hash;
+    id.hash = bininfo->shader_hash;
+    id.len_dw = bininfo->length / sizeof(u32);
     return {.user_data = pgm.user_data, .code = std::span{code, id.len_dw}, .hash = id.hash};
+}
+
+// A stage pointing at memory without a shader is skipped; log each address once in a row so a
+// per-draw repeat does not flood the log.
+static void LogMissingShaderBinary(HwStage stage, const u32* code) {
+    static std::atomic<const u32*> last_missing{};
+    if (last_missing.exchange(code, std::memory_order_relaxed) != code) {
+        LOG_ERROR(Render_Vulkan, "Shader binary info not found for {} stage at {}, skipping", stage,
+                  fmt::ptr(code));
+    }
 }
 
 bool PipelineCache::RefreshGraphicsStages(bool track_hash_diff) {
@@ -1610,6 +1625,7 @@ bool PipelineCache::RefreshGraphicsStages(bool track_hash_diff) {
         key.stage_hashes[idx] = hash;
     };
     Shader::Backend::Bindings binding{};
+    bool missing_binary = false;
     const auto bind_stage = [&](HwStage stage_in, SwStage stage_out) -> bool {
         const auto stage_in_idx = static_cast<u32>(stage_in);
         const auto stage_out_idx = static_cast<u32>(stage_out);
@@ -1627,6 +1643,13 @@ bool PipelineCache::RefreshGraphicsStages(bool track_hash_diff) {
         }
 
         const auto params = ResolveParams(stage_out, *pgm);
+        if (params.code.empty()) {
+            LogMissingShaderBinary(stage_in, pgm->Address<u32*>());
+            store_hash(stage_out_idx, 0);
+            infos[stage_out_idx] = nullptr;
+            missing_binary = true;
+            return false;
+        }
         store_hash(stage_out_idx, GetProgram(stage_in, stage_out, params, binding, stage_out_idx));
         return true;
     };
@@ -1723,6 +1746,9 @@ bool PipelineCache::RefreshGraphicsStages(bool track_hash_diff) {
         LOG_WARNING(Render_Vulkan, "unimplemented shader stage {}", (u32)regs.stage_enable.raw);
         return false;
     }
+    if (missing_binary) {
+        return false;
+    }
 
     const auto* vs_info = infos[static_cast<u32>(Shader::SwStage::Vertex)];
     if (!instance.IsVertexInputDynamicState() && vs_info && fetch_shader_ref) {
@@ -1746,6 +1772,10 @@ bool PipelineCache::RefreshComputeKey() {
     Shader::Backend::Bindings binding{};
     const auto& cs_pgm = liverpool->GetCsRegs();
     const auto cs_params = ResolveParams(SwStage::Compute, cs_pgm);
+    if (cs_params.code.empty()) {
+        LogMissingShaderBinary(HwStage::Compute, cs_pgm.Address<u32*>());
+        return false;
+    }
     // The compute program publishes into slot 0, which the compute lookup
     // dereferences; compute stages carry no fetch shader.
     compute_key.value =

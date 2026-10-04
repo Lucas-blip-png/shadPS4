@@ -798,6 +798,12 @@ public:
 
 private:
     void FreeImage(ImageId image_id) {
+        // A second free of the same image would defer its slot erase twice. The slot is not
+        // reused before the first erase runs, so an unregistered image here is that same image.
+        if (False(slot_images[image_id].flags & ImageFlagBits::Registered)) {
+            LOG_ERROR(Render_Vulkan, "Skipping second free of image {}", image_id.index);
+            return;
+        }
         UntrackImage(image_id);
         UnregisterImage(image_id);
         DeleteImage(image_id);
