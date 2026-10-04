@@ -135,7 +135,7 @@ override_controller_color = false, 0, 0, 255
 # hotkey_toggle_mouse_to_touchpad_swipe. Threshold is the minimum drag in pixels.
 # touchpad_swipe_enabled = false
 # touchpad_swipe_threshold = 15
-# touchpad_swipe_button_delay = 200
+# touchpad_swipe_button_delay = 16
 # Hold-combo swipes: while the hold input is held, the four inputs play back touchpad swipes
 # instead of their normal mappings (hold_passthrough keeps the hold input's own mappings live)
 # touchpad_swipe_combo_enabled = false

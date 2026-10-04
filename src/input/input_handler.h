@@ -30,9 +30,9 @@
 #define SDL_GAMEPAD_BUTTON_TOUCHPAD_UP SDL_GAMEPAD_BUTTON_COUNT + 4
 #define SDL_GAMEPAD_BUTTON_TOUCHPAD_DOWN SDL_GAMEPAD_BUTTON_COUNT + 5
 
-// Synthetic touchpad-swipe outputs, bindable like buttons. A rising edge plays back a timed
-// touch down at (0.5, 0.5) with the TouchPad button, a move to the direction endpoint after
-// `touchpad_swipe_button_delay` (default 200 ms), then a release.
+// Synthetic touchpad-swipe outputs, bindable like buttons. A rising edge plays back a finger
+// touching down near one edge, resting `touchpad_swipe_button_delay` (default 16 ms), then
+// sliding across the pad in ten 16 ms steps and lifting, without the TouchPad click.
 #define SDL_GAMEPAD_BUTTON_TOUCHPAD_SWIPE_UP SDL_GAMEPAD_BUTTON_COUNT + 6
 #define SDL_GAMEPAD_BUTTON_TOUCHPAD_SWIPE_DOWN SDL_GAMEPAD_BUTTON_COUNT + 7
 #define SDL_GAMEPAD_BUTTON_TOUCHPAD_SWIPE_LEFT SDL_GAMEPAD_BUTTON_COUNT + 8
@@ -161,7 +161,7 @@ const std::map<std::string, u32> string_to_cbutton_map = {
     {"touchpad_up", SDL_GAMEPAD_BUTTON_TOUCHPAD_UP},
     {"touchpad_down", SDL_GAMEPAD_BUTTON_TOUCHPAD_DOWN},
     // synthetic touchpad-swipe outputs (output only): pressing the bound input plays back
-    // centre -> direction -> release
+    // touch down -> slide -> release
     {"touchpad_swipe_up", SDL_GAMEPAD_BUTTON_TOUCHPAD_SWIPE_UP},
     {"touchpad_swipe_down", SDL_GAMEPAD_BUTTON_TOUCHPAD_SWIPE_DOWN},
     {"touchpad_swipe_left", SDL_GAMEPAD_BUTTON_TOUCHPAD_SWIPE_LEFT},
