@@ -6,7 +6,6 @@
 
 #include "common/alignment.h"
 #include "common/scope_exit.h"
-#include "common/thread.h"
 #include "core/debug_state.h"
 #include "core/emulator_settings.h"
 #include "core/libraries/kernel/threads/exception.h"
@@ -32,9 +31,6 @@ static constexpr size_t STREAM_BUFFER_SIZE = 128_MB;
 static constexpr u64 READBACK_WINDOW_SIZE = 512_KB;
 // Every readback window lies inside one tracker region.
 static_assert(HIGHER_PAGE_SIZE % READBACK_WINDOW_SIZE == 0);
-// Tracker regions read back from within this many fences get their downloads started at a fence.
-static constexpr u64 HOT_FENCES = 64;
-static constexpr size_t MAX_HOT_REGIONS = 8;
 
 static constexpr auto ARENA_USAGE =
     vk::BufferUsageFlagBits::eTransferSrc | vk::BufferUsageFlagBits::eTransferDst |
@@ -107,10 +103,6 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
     }
     clean_sync_peek = EmulatorSettings.IsCleanSyncPeek();
     readback_offload = EmulatorSettings.IsReadbackOffload();
-    readback_lag = readback_offload && EmulatorSettings.IsReadbackLag();
-    if (readback_lag) {
-        prefetch_thread = std::jthread{[this](std::stop_token stop) { PrefetchWorker(stop); }};
-    }
 }
 
 BufferCache::~BufferCache() = default;
@@ -223,34 +215,6 @@ bool BufferCache::OffloadReadback(VAddr device_addr, u64 size, bool is_write) {
     if (device_addr + size > window + READBACK_WINDOW_SIZE) {
         return false;
     }
-    if (!is_write && readback_lag) {
-        const VAddr region = Common::AlignDown(device_addr, HIGHER_PAGE_SIZE);
-        u64 seq{};
-        bool found = false;
-        {
-            std::scoped_lock lk{readback_mutex};
-            const auto hot =
-                std::ranges::find(hot_regions, region, &std::pair<VAddr, u64>::first);
-            if (hot != hot_regions.end()) {
-                hot->second = fence_count;
-            } else if (hot_regions.size() < MAX_HOT_REGIONS) {
-                hot_regions.emplace_back(region, fence_count);
-            }
-            // The window's prefetch is in flight: hand out the previous bytes and let the
-            // prefetch write the new ones. A GPU write since the prefetch takes the normal path.
-            const auto it = std::ranges::find(prefetch_seqs, window, &std::pair<VAddr, u64>::first);
-            if (it != prefetch_seqs.end()) {
-                seq = it->second;
-                found = true;
-            }
-        }
-        if (found &&
-            memory_tracker->TryUnmarkRegionAsGpuModified(window, READBACK_WINDOW_SIZE, seq)) {
-            std::scoped_lock lk{readback_mutex};
-            lag_released.push_back(window);
-            return true;
-        }
-    }
     // Guest signals stay pending until the readback is done: other threads that fault on the
     // window wait for this one, and a guest handler could wait for them.
     Libraries::Kernel::Sigset all_signals;
@@ -290,7 +254,7 @@ bool BufferCache::OffloadReadback(VAddr device_addr, u64 size, bool is_write) {
     return false;
 }
 
-void BufferCache::RecordReadback(Readback& job, bool flush) {
+void BufferCache::RecordReadback(Readback& job) {
     {
         std::scoped_lock lk{readback_mutex};
         if (IsReadbackPending(job.window, READBACK_WINDOW_SIZE)) {
@@ -315,30 +279,17 @@ void BufferCache::RecordReadback(Readback& job, bool flush) {
     job.write_seq = memory_tracker->GpuWriteSeq(job.window, READBACK_WINDOW_SIZE);
     runtime.CopyBuffer(arena, job.staging.buffer, job.copies);
     job.tick = scheduler.CurrentTick();
-    if (flush) {
-        scheduler.Flush();
-    }
+    scheduler.Flush();
     std::scoped_lock lk{readback_mutex};
     pending_readbacks.push_back(job.window);
 }
 
 void BufferCache::FinishReadback(const Readback& job) {
     job.staging.Invalidate();
-    bool lagged = false;
-    if (readback_lag) {
-        std::scoped_lock lk{readback_mutex};
-        lagged = std::erase(lag_released, job.window) != 0;
-    }
     // The write-back runs ahead of the verdict: other downloads of the window wait while this one
     // is pending, and a vetoed window stays GPU modified.
     for (const auto& copy : job.copies) {
         auto* dst_addr = std::bit_cast<u8*>(job.arena_base + copy.srcOffset);
-        // ponytail: a guest write landing between this check and the write-back is lost; a
-        // per-page write generation would close it if it ever shows up.
-        if (lagged && memory_tracker->IsRegionCpuModified(job.arena_base + copy.srcOffset,
-                                                          copy.size)) {
-            continue;
-        }
         memory->TryWriteBacking(
             dst_addr, job.staging.mapped + (copy.dstOffset - job.staging.offset), copy.size);
     }
@@ -356,68 +307,6 @@ void BufferCache::FinishReadback(const Readback& job) {
     readback_cv.notify_all();
     // The staging pool belongs to the GPU thread.
     liverpool->SendCommand([this, staging = job.staging] { staging_pool.FreeDeferred(staging); });
-}
-
-void BufferCache::PrefetchReadbacks() {
-    if (!readback_lag) {
-        return;
-    }
-    const u64 fence = ++fence_count;
-    boost::container::small_vector<VAddr, MAX_HOT_REGIONS> regions;
-    {
-        std::scoped_lock lk{readback_mutex};
-        std::erase_if(hot_regions, [&](const auto& hot) { return fence - hot.second > HOT_FENCES; });
-        for (const auto& hot : hot_regions) {
-            regions.push_back(hot.first);
-        }
-    }
-    std::vector<std::unique_ptr<Readback>> jobs;
-    for (const VAddr region : regions) {
-        for (VAddr window = region; window < region + HIGHER_PAGE_SIZE;
-             window += READBACK_WINDOW_SIZE) {
-            if (!memory_tracker->IsRegionGpuModified(window, READBACK_WINDOW_SIZE)) {
-                continue;
-            }
-            auto job = std::make_unique<Readback>(Readback{.window = window});
-            RecordReadback(*job, false);
-            if (!job->busy && !job->copies.empty()) {
-                jobs.push_back(std::move(job));
-            }
-        }
-    }
-    if (jobs.empty()) {
-        return;
-    }
-    scheduler.Flush();
-    {
-        std::scoped_lock lk{readback_mutex};
-        for (auto& job : jobs) {
-            prefetch_seqs.emplace_back(job->window, job->write_seq);
-            prefetch_queue.push_back(std::move(job));
-        }
-    }
-    prefetch_cv.notify_one();
-}
-
-void BufferCache::PrefetchWorker(std::stop_token stop) {
-    Common::SetCurrentThreadName("ReadbackPrefetch");
-    while (true) {
-        std::unique_ptr<Readback> job;
-        {
-            std::unique_lock lk{readback_mutex};
-            if (!prefetch_cv.wait(lk, stop, [&] { return !prefetch_queue.empty(); })) {
-                return;
-            }
-            job = std::move(prefetch_queue.front());
-            prefetch_queue.pop_front();
-        }
-        scheduler.GetWorkSemaphore()->Wait(job->tick);
-        {
-            std::scoped_lock lk{readback_mutex};
-            std::erase_if(prefetch_seqs, [&](const auto& p) { return p.first == job->window; });
-        }
-        FinishReadback(*job);
-    }
 }
 
 bool BufferCache::IsReadbackPending(VAddr addr, u64 size) const {
