@@ -289,6 +289,7 @@ private:
     // Frozen counter = every query pair differences to zero samples passed:
     // the title's own visibility logic then culls those draws before issue.
     bool occlude_all_{};
+    bool real_occlusion_{};
     bool reg_run_{};
 
     struct ConstantEngine {

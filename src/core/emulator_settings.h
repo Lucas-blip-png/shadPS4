@@ -505,6 +505,9 @@ struct GPUSettings {
     // visible. Titles that gate effects on visibility (inFAMOUS lens flares)
     // then cull those draws themselves before submission.
     Setting<bool> occlude_all{false};
+    // Answer occlusion queries with real Vulkan query counts, written to the
+    // guest results once the GPU retires them. occlude_all takes precedence.
+    Setting<bool> real_occlusion_queries{false};
     // Flush the graphics command buffer every this many draws (0 = only at
     // submit-done and faults). A guest readback then waits on a command
     // buffer holding at most this many draws instead of the whole recorded
@@ -755,6 +758,7 @@ struct GPUSettings {
             GPU_OVERRIDE(dyn_state_memo),
             GPU_OVERRIDE(runtime_info_stamp_gate),
             GPU_OVERRIDE(occlude_all),
+            GPU_OVERRIDE(real_occlusion_queries),
             GPU_OVERRIDE(flush_draw_interval),
             GPU_OVERRIDE(pipeline_key_stamp_reuse),
             GPU_OVERRIDE(shader_params_memo),
@@ -843,7 +847,7 @@ struct GPUSettings {
     runtime_info_stamp_gate, userfaultfd, gpu_thread_core_reserve, one_thread_per_core, \
     vertex_layout_memo, covered_range_skip, residency_bitmap, \
     readback_linear_images_async, inline_fetch_shader, stream_barrier_skip, \
-    clean_sync_peek, readback_offload
+    clean_sync_peek, readback_offload, real_occlusion_queries
 // clang-format on
 template <
     typename BasicJsonType,
@@ -1165,6 +1169,7 @@ public:
     SETTING_FORWARD_BOOL(m_gpu, DynStateMemo, dyn_state_memo)
     SETTING_FORWARD_BOOL(m_gpu, RuntimeInfoStampGate, runtime_info_stamp_gate)
     SETTING_FORWARD_BOOL(m_gpu, OccludeAll, occlude_all)
+    SETTING_FORWARD_BOOL(m_gpu, RealOcclusionQueries, real_occlusion_queries)
     SETTING_FORWARD(m_gpu, FlushDrawInterval, flush_draw_interval)
     SETTING_FORWARD_BOOL(m_gpu, PipelineKeyStampReuse, pipeline_key_stamp_reuse)
     SETTING_FORWARD_BOOL(m_gpu, ShaderParamsMemo, shader_params_memo)

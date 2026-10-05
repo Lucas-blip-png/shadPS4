@@ -90,6 +90,9 @@ public:
     void Finish();
     void OnSubmit();
     void OnFence();
+    /// Begins or ends a host occlusion query for a ZPASS_DONE dump to the given results.
+    /// Returns false when the event has to take the fake counter path.
+    bool OcclusionEvent(VAddr address, u32 num_pairs);
 
     // Scopes a guest-copy hold to one packet run: the caller yields to guest
     // threads between runs and the submit loop sleeps, so the hold must not
@@ -425,6 +428,11 @@ private:
     u64 vlayout_calls_{};
     u64 vlayout_builds_{};
     u64 filter_true_stamp_{};
+    vk::UniqueQueryPool occlusion_pool_;
+    u32 occlusion_slot_{};
+    VAddr occlusion_active_{}; // results of the open query, 0 when none
+
+    void EndOcclusionQuery();
 
     friend class VideoCore::BufferCache;
 

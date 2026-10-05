@@ -195,6 +195,8 @@ Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_, Runtime
     }
 
     scheduler.SetSubmitCallback([this](Vulkan::SubmitInfo& info) {
+        // A query cannot span command buffers: its end event takes the fake path.
+        EndOcclusionQuery();
         runtime.FlushBarriers();
         buffer_cache.SubmitPendingArenaBinds(info);
     });
@@ -1036,6 +1038,65 @@ void Rasterizer::OnFence() {
         DropCopyHold(hold_drops_wait_);
     }
     texture_cache.ProcessDownloadImages();
+}
+
+void Rasterizer::EndOcclusionQuery() {
+    if (!occlusion_active_) {
+        return;
+    }
+    occlusion_active_ = 0;
+    // Begun outside a render pass, so it must end outside one too.
+    scheduler.EndRendering();
+    scheduler.CommandBuffer().endQuery(*occlusion_pool_, occlusion_slot_);
+}
+
+bool Rasterizer::OcclusionEvent(VAddr address, u32 num_pairs) {
+    // ponytail: slots recycle after this many queries; the deferred read of a slot must run first.
+    static constexpr u32 NumOcclusionQueries = 1024;
+    static constexpr u64 OcclusionCounterValidMask = 0x8000000000000000ULL;
+    // Gnm results hold a {begin, end} counter pair per RB; end dumps land 8 bytes in.
+    if (occlusion_active_ && address == occlusion_active_ + 8) {
+        EndOcclusionQuery();
+        scheduler.DeferPriorityOperation([device = instance.GetDevice(), pool = *occlusion_pool_,
+                                          slot = occlusion_slot_, memory = memory,
+                                          base = address - 8, num_pairs] {
+            u64 samples{};
+            if (device.getQueryPoolResults(
+                    pool, slot, 1, sizeof(samples), &samples, sizeof(samples),
+                    vk::QueryResultFlagBits::e64 | vk::QueryResultFlagBits::eWait) !=
+                vk::Result::eSuccess) {
+                return;
+            }
+            // All samples are reported on the first RB; the guest sums end - begin over all.
+            std::array<u64, 32> pairs;
+            pairs.fill(OcclusionCounterValidMask);
+            pairs[1] |= samples;
+            memory->TryWriteBacking(std::bit_cast<void*>(base), pairs.data(),
+                                    num_pairs * 2 * sizeof(u64));
+        });
+        return true;
+    }
+    if (address & 8) {
+        return false;
+    }
+    if (!occlusion_pool_) {
+        occlusion_pool_ = Check<"create occlusion query pool">(
+            instance.GetDevice().createQueryPoolUnique({
+                .queryType = vk::QueryType::eOcclusion,
+                .queryCount = NumOcclusionQueries,
+            }));
+    }
+    EndOcclusionQuery();
+    scheduler.EndRendering();
+    occlusion_slot_ = (occlusion_slot_ + 1) % NumOcclusionQueries;
+    const auto cmdbuf = scheduler.CommandBuffer();
+    cmdbuf.resetQueryPool(*occlusion_pool_, occlusion_slot_, 1);
+    cmdbuf.beginQuery(*occlusion_pool_, occlusion_slot_,
+                      instance.IsOcclusionQueryPreciseSupported()
+                          ? vk::QueryControlFlagBits::ePrecise
+                          : vk::QueryControlFlags{});
+    occlusion_active_ = address;
+    return true;
 }
 
 void Rasterizer::EmitSkipcacheTelemetry(Skipcache::Framework& skipcache) {

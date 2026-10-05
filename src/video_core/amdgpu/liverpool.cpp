@@ -291,6 +291,7 @@ Liverpool::Liverpool() {
     gfx_stamp.rt_mask = rt_reg_mask_.data();
     gfx_stamp.classify_rt = gfx_stamp.active && EmulatorSettings.IsRtStateStamp();
     occlude_all_ = EmulatorSettings.IsOccludeAll();
+    real_occlusion_ = EmulatorSettings.IsRealOcclusionQueries() && !occlude_all_;
     reg_run_ = EmulatorSettings.IsParserRegRun();
     Common::SetCoreReservationEnabled(EmulatorSettings.IsGpuThreadCoreReserve());
     process_thread = std::jthread{std::bind_front(&Liverpool::Process, this)};
@@ -999,6 +1000,10 @@ std::span<const u32> Liverpool::RunGraphicsPackets(std::span<const u32> dcb, Tas
             } else if (event->event_index.Value() == EventIndex::ZpassDone) {
                 if (event->event_type.Value() == EventType::PixelPipeStatDump) {
                     ++packet_stats.occlusion_events;
+                    if (real_occlusion_ && rasterizer &&
+                        rasterizer->OcclusionEvent(event->Address<VAddr>(), num_counter_pairs)) {
+                        break;
+                    }
                     static constexpr u64 OcclusionCounterValidMask = 0x8000000000000000ULL;
                     static constexpr u64 OcclusionCounterStep = 0x2FFFFFFULL;
                     u64* results = event->Address<u64*>();
