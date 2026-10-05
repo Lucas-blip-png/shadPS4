@@ -1036,6 +1036,7 @@ void Rasterizer::OnFence() {
         DropCopyHold(hold_drops_wait_);
     }
     texture_cache.ProcessDownloadImages();
+    buffer_cache.PrefetchReadbacks();
 }
 
 void Rasterizer::EmitSkipcacheTelemetry(Skipcache::Framework& skipcache) {

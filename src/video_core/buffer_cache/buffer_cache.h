@@ -3,9 +3,12 @@
 
 #pragma once
 
+#include <atomic>
 #include <condition_variable>
 #include <deque>
+#include <memory>
 #include <mutex>
+#include <thread>
 #include <boost/container/small_vector.hpp>
 
 #include "common/interval_set.h"
@@ -100,6 +103,10 @@ public:
     /// Synchronizes all buffers needed for DMA.
     void SynchronizeDmaBuffers();
 
+    /// Starts the download of the GPU modified ranges the guest recently read back, so a read
+    /// after the fence finds them done. Runs on the GPU thread at each fence.
+    void PrefetchReadbacks();
+
     /// Commits pending sparse buffer memory binds. Must be called before every scheduler submit.
     void SubmitPendingArenaBinds(Vulkan::SubmitInfo& info);
 
@@ -149,7 +156,10 @@ private:
     bool OffloadReadback(VAddr device_addr, u64 size, bool is_write);
 
     /// Records and submits the download of a readback window. Runs on the GPU thread.
-    void RecordReadback(Readback& job);
+    void RecordReadback(Readback& job, bool flush = true);
+
+    /// Finishes prefetched readbacks once their copy signals.
+    void PrefetchWorker(std::stop_token stop);
 
     /// Writes a signaled readback to guest memory and unmarks its window if no GPU write was
     /// marked in it since the copy.
@@ -224,6 +234,17 @@ private:
     std::vector<VAddr> pending_readbacks;
     /// Ranges of vetoed readbacks, merged back into gpu_modified_ranges on the GPU thread.
     std::vector<std::pair<VAddr, u64>> readback_returns;
+    /// Tracker regions the guest read back from, with the fence count of the last read.
+    std::vector<std::pair<VAddr, u64>> hot_regions;
+    std::atomic<u64> fence_count{};
+    std::deque<std::unique_ptr<Readback>> prefetch_queue;
+    std::condition_variable_any prefetch_cv;
+    /// Windows with a prefetch in flight and the GPU write sequence it was recorded at.
+    std::vector<std::pair<VAddr, u64>> prefetch_seqs;
+    /// Prefetched windows a guest read already took the previous bytes of.
+    std::vector<VAddr> lag_released;
+    bool readback_lag{};
+    std::jthread prefetch_thread;
 };
 
 } // namespace VideoCore
