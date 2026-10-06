@@ -8,6 +8,7 @@
 #include <bit>
 #include <condition_variable>
 #include <cstring>
+#include <memory>
 #include <mutex>
 #include <thread>
 #include <queue>
@@ -16,6 +17,7 @@
 #include "common/unique_function.h"
 #include "video_core/amdgpu/regs_color.h"
 #include "video_core/amdgpu/regs_primitive.h"
+#include "video_core/renderer_vulkan/vk_command_recorder.h"
 #include "video_core/renderer_vulkan/vk_resource_pool.h"
 #include "video_core/renderer_vulkan/vk_semaphore.h"
 #include "vulkan/vulkan.hpp"
@@ -213,7 +215,7 @@ struct DynamicState {
     u64 color_write_mask_skips_{};
 
     /// Commits the dynamic state to the provided command buffer.
-    void Commit(const Instance& instance, const vk::CommandBuffer& cmdbuf);
+    void Commit(const Instance& instance, const CommandRecorder& cmdbuf);
 
     /// Invalidates all dynamic state to be flushed into the next command buffer.
     void Invalidate() {
@@ -415,7 +417,9 @@ using SubmitFunc = Common::UniqueFunction<void, SubmitInfo&>;
 
 class Scheduler {
 public:
-    explicit Scheduler(const Instance& instance);
+    /// With record_on_thread, the Vulkan commands are recorded and submitted on a thread of the
+    /// scheduler's own, from a stream of them the thread using the scheduler fills.
+    explicit Scheduler(const Instance& instance, bool record_on_thread = false);
     ~Scheduler();
 
     /// Sends the current execution context to the GPU
@@ -489,7 +493,7 @@ public:
     void BeginSession();
 
     /// Returns the current command buffer used for uploads.
-    vk::CommandBuffer UploadCommandBuffer();
+    CommandRecorder UploadCommandBuffer();
 
     /// Sets a function to be called on every session finalization.
     void SetSessionCallback(SessionFunc&& on_session) {
@@ -512,9 +516,25 @@ public:
     }
 
     /// Returns the current command buffer.
-    vk::CommandBuffer CommandBuffer() const {
-        return sessions.back().primary;
+    CommandRecorder CommandBuffer() const {
+        if (stream) {
+            return CommandRecorder{*stream, CommandTarget::Primary};
+        }
+        return CommandRecorder{direct_context.primary};
     }
+
+    /// Lets the recording thread see the commands recorded so far; called once per draw or
+    /// dispatch. It replays them in batches, or all at once on a flush.
+    void PublishCommands() {
+        if (stream) {
+            stream->Publish(false);
+        }
+    }
+
+    /// Waits until the work up to the given tick, which was flushed, is submitted to the GPU. Work
+    /// submitted to the same queue that waits for it has to come after it, or the queue would
+    /// wait for work behind it. Without a recording thread, flushed work is submitted right away.
+    void WaitSubmitted(u64 tick);
 
     /// Returns the current command buffer tick.
     [[nodiscard]] u64 CurrentTick() const noexcept {
@@ -575,6 +595,23 @@ private:
 
     void SubmitExecution(SubmitInfo& info);
 
+    /// Runs a function of the command buffers being recorded where they are recorded: right away,
+    /// or on the recording thread after the commands recorded before.
+    template <typename Func>
+    void Run(Func&& func) {
+        if (stream) {
+            stream->Emit(std::forward<Func>(func));
+        } else {
+            func(direct_context);
+        }
+    }
+
+    /// Submits the command buffers ended since the last submission. Called where they are
+    /// recorded, with the submit mutex held.
+    void SubmitRecorded(const SubmitInfo& info, u64 signal_value);
+
+    void RecordingThread(std::stop_token stoken);
+
     void PriorityPendingOpsThread(std::stop_token stoken);
 
 private:
@@ -587,8 +624,8 @@ private:
     SessionFunc on_session{};
     SubmitFunc on_submit{};
     struct Session {
-        vk::CommandBuffer upload{};
-        vk::CommandBuffer primary{};
+        /// Whether anything was recorded into the upload command buffer.
+        bool has_upload{};
     };
     std::vector<Session> sessions;
     std::condition_variable_any event_cv;
@@ -614,6 +651,16 @@ private:
     u64 rs_restarts_{};
     u64 rs_interrupted_{};
     tracy::VkCtxScope* profiler_scope{};
+
+    /// Commands for the recording thread, if there is one.
+    std::unique_ptr<CommandStream> stream;
+    /// The command buffers being recorded when they are recorded right away.
+    RecordingContext direct_context;
+    /// Command buffers ended and not submitted yet, where they are recorded.
+    std::vector<vk::CommandBuffer> recorded;
+    /// The last tick the recording thread submitted work for.
+    std::atomic<u64> submitted_tick{};
+    std::jthread recording_thread;
 };
 
 } // namespace Vulkan

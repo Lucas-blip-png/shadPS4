@@ -420,7 +420,7 @@ Pipeline::DescriptorWrites partial_scratch;
 
 // The maintenance6 entry points take the same arguments in a struct and skip
 // the runtime's forwarding wrapper (a struct build plus a tail call per push).
-SHAD_FORCE_INLINE void PushSet(vk::CommandBuffer cmdbuf, bool direct,
+SHAD_FORCE_INLINE void PushSet(const CommandRecorder& cmdbuf, bool direct,
                                vk::ShaderStageFlags stage_flags, vk::PipelineLayout layout,
                                vk::PipelineBindPoint bind_point, u32 count,
                                const vk::WriteDescriptorSet* writes) {

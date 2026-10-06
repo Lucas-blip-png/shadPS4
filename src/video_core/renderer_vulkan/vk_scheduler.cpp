@@ -16,18 +16,29 @@ namespace Vulkan {
 
 std::mutex Scheduler::submit_mutex;
 
-Scheduler::Scheduler(const Instance& instance)
+Scheduler::Scheduler(const Instance& instance, bool record_on_thread)
     : instance{instance}, work_semaphore{instance}, command_pool{instance, &work_semaphore} {
 #if TRACY_GPU_ENABLED
     profiler_scope = reinterpret_cast<tracy::VkCtxScope*>(std::malloc(sizeof(tracy::VkCtxScope)));
 #endif
     pop_poll_throttle_ = std::max<u32>(EmulatorSettings.GetPendingPopThrottle(), 1u);
+    if (record_on_thread) {
+        stream = std::make_unique<CommandStream>();
+    }
     BeginSession();
     priority_pending_ops_thread =
         std::jthread(std::bind_front(&Scheduler::PriorityPendingOpsThread, this));
+    if (stream) {
+        recording_thread = std::jthread(std::bind_front(&Scheduler::RecordingThread, this));
+    }
 }
 
 Scheduler::~Scheduler() {
+    if (recording_thread.joinable()) {
+        recording_thread.request_stop();
+        stream->Wake();
+        recording_thread.join();
+    }
 #if TRACY_GPU_ENABLED
     std::free(profiler_scope);
 #endif
@@ -105,17 +116,22 @@ void Scheduler::EndRendering() {
     CommandBuffer().endRendering();
 }
 
-vk::CommandBuffer Scheduler::UploadCommandBuffer() {
-    auto& upload_cmdbuf = sessions.back().upload;
-    if (upload_cmdbuf) {
-        return upload_cmdbuf;
+CommandRecorder Scheduler::UploadCommandBuffer() {
+    auto& session = sessions.back();
+    if (!session.has_upload) {
+        session.has_upload = true;
+        Run([this](RecordingContext& context) {
+            const vk::CommandBufferBeginInfo begin_info = {
+                .flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit,
+            };
+            context.upload = command_pool.Commit();
+            Check(context.upload.begin(begin_info));
+        });
     }
-    const vk::CommandBufferBeginInfo begin_info = {
-        .flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit,
-    };
-    upload_cmdbuf = command_pool.Commit();
-    Check(upload_cmdbuf.begin(begin_info));
-    return upload_cmdbuf;
+    if (stream) {
+        return CommandRecorder{*stream, CommandTarget::Upload};
+    }
+    return CommandRecorder{direct_context.upload};
 }
 
 void Scheduler::Flush(SubmitInfo& info) {
@@ -148,6 +164,16 @@ u64 Scheduler::WaitTagged(u64 tick, WaitSite site) {
     const u64 blocked = Common::FencedRDTSC() - t0;
     RecordWait(site, blocked);
     return blocked;
+}
+
+void Scheduler::WaitSubmitted(u64 tick) {
+    if (!stream) {
+        return;
+    }
+    for (u64 submitted = submitted_tick.load(std::memory_order_acquire); submitted < tick;
+         submitted = submitted_tick.load(std::memory_order_acquire)) {
+        submitted_tick.wait(submitted, std::memory_order_acquire);
+    }
 }
 
 void Scheduler::Wait(u64 tick) {
@@ -187,13 +213,14 @@ void Scheduler::PopPendingOperations() {
 void Scheduler::BeginSession() {
     EndSession();
 
-    auto& session = sessions.emplace_back();
-
-    const vk::CommandBufferBeginInfo begin_info = {
-        .flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit,
-    };
-    session.primary = command_pool.Commit();
-    Check(session.primary.begin(begin_info));
+    sessions.emplace_back();
+    Run([this](RecordingContext& context) {
+        const vk::CommandBufferBeginInfo begin_info = {
+            .flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit,
+        };
+        context.primary = command_pool.Commit();
+        Check(context.primary.begin(begin_info));
+    });
 
     // Invalidate dynamic state so it gets applied to the new command buffer.
     dynamic_state.Invalidate();
@@ -217,17 +244,24 @@ void Scheduler::EndSession() {
         on_session();
     }
 
-    const auto& session = sessions.back();
-    if (session.upload) {
-        Check(session.upload.end());
-    }
-
+    const bool has_upload = sessions.back().has_upload;
     EndRendering();
-    Check(session.primary.end());
+    Run([this, has_upload](RecordingContext& context) {
+        if (has_upload) {
+            Check(context.upload.end());
+            recorded.push_back(context.upload);
+            context.upload = vk::CommandBuffer{};
+        }
+        Check(context.primary.end());
+        recorded.push_back(context.primary);
+        context.primary = vk::CommandBuffer{};
+    });
 }
 
 void Scheduler::SubmitExecution(SubmitInfo& info) {
-    std::scoped_lock lk{submit_mutex};
+    // The queue is used by other threads too. With a recording thread the command buffers are
+    // submitted there; here the lock only covers the sparse binds of on_submit.
+    std::unique_lock lk{submit_mutex};
     // Every submit of this scheduler runs on the GPU command thread, which is
     // where the hook's state lives.
     if (submit_hook_) {
@@ -253,23 +287,34 @@ void Scheduler::SubmitExecution(SubmitInfo& info) {
     if (on_submit) {
         on_submit(info);
     }
+    if (stream) {
+        lk.unlock();
+    }
 
     EndSession();
-
-    std::vector<vk::CommandBuffer> cmd_buffers;
-    cmd_buffers.reserve(sessions.size() * 2);
-
-    for (const auto& session : sessions) {
-        if (session.upload) {
-            cmd_buffers.push_back(session.upload);
-        }
-        cmd_buffers.push_back(session.primary);
-    }
     sessions.clear();
 
     const vk::Semaphore timeline = work_semaphore.Handle();
     info.AddSignal(timeline, signal_value);
 
+    if (stream) {
+        Run([this, info, signal_value](RecordingContext&) {
+            std::scoped_lock lock{submit_mutex};
+            SubmitRecorded(info, signal_value);
+        });
+        stream->Publish(true);
+    } else {
+        SubmitRecorded(info, signal_value);
+    }
+
+    work_semaphore.Refresh();
+    BeginSession();
+
+    // Apply pending operations
+    PopPendingOperations();
+}
+
+void Scheduler::SubmitRecorded(const SubmitInfo& info, u64 signal_value) {
     static constexpr std::array<vk::PipelineStageFlags, 2> wait_stage_masks = {
         vk::PipelineStageFlagBits::eAllCommands,
         vk::PipelineStageFlagBits::eColorAttachmentOutput,
@@ -287,8 +332,8 @@ void Scheduler::SubmitExecution(SubmitInfo& info) {
         .waitSemaphoreCount = info.num_wait_semas,
         .pWaitSemaphores = info.wait_semas.data(),
         .pWaitDstStageMask = wait_stage_masks.data(),
-        .commandBufferCount = static_cast<u32>(cmd_buffers.size()),
-        .pCommandBuffers = cmd_buffers.data(),
+        .commandBufferCount = static_cast<u32>(recorded.size()),
+        .pCommandBuffers = recorded.data(),
         .signalSemaphoreCount = info.num_signal_semas,
         .pSignalSemaphores = info.signal_semas.data(),
     };
@@ -296,12 +341,23 @@ void Scheduler::SubmitExecution(SubmitInfo& info) {
     ImGui::Core::TextureManager::Submit();
     auto submit_result = instance.GetGraphicsQueue().submit(submit_info, info.fence);
     ASSERT_MSG(submit_result != vk::Result::eErrorDeviceLost, "Device lost during submit");
+    recorded.clear();
 
-    work_semaphore.Refresh();
-    BeginSession();
+    submitted_tick.store(signal_value, std::memory_order_release);
+    if (stream) {
+        submitted_tick.notify_all();
+    }
+}
 
-    // Apply pending operations
-    PopPendingOperations();
+void Scheduler::RecordingThread(std::stop_token stoken) {
+    Common::SetCurrentThreadName("shadPS4:GpuCommandRecorder");
+    RecordingContext context{};
+    while (!stoken.stop_requested()) {
+        stream->Replay(context);
+        if (!stream->HasWork()) {
+            stream->WaitForWork(stoken);
+        }
+    }
 }
 
 void Scheduler::PriorityPendingOpsThread(std::stop_token stoken) {
@@ -330,7 +386,7 @@ void Scheduler::PriorityPendingOpsThread(std::stop_token stoken) {
     }
 }
 
-void DynamicState::Commit(const Instance& instance, const vk::CommandBuffer& cmdbuf) {
+void DynamicState::Commit(const Instance& instance, const CommandRecorder& cmdbuf) {
     if (dirty_state.viewports) {
         dirty_state.viewports = false;
         cmdbuf.setViewportWithCount(viewports);

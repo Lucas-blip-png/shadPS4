@@ -261,7 +261,7 @@ static const std::array<u8, 1024>& GetUnorm10ToU8Lut() {
     return lut;
 }
 
-static void CopyImageToReadback(const vk::CommandBuffer& cmdbuf, const vk::Image image,
+static void CopyImageToReadback(const CommandRecorder& cmdbuf, const vk::Image image,
                                 const vk::ImageLayout layout, ScreenshotReadback& readback) {
     const vk::BufferImageCopy copy_region = {
         .bufferOffset = 0,
@@ -466,7 +466,8 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
     : window{window_}, liverpool{liverpool_},
       instance{window, EmulatorSettings.GetGpuId(), EmulatorSettings.IsVkValidationEnabled(),
                EmulatorSettings.IsVkCrashDiagnosticEnabled()},
-      draw_scheduler{instance}, present_scheduler{instance}, flip_scheduler{instance},
+      draw_scheduler{instance, EmulatorSettings.IsThreadedCmdRecording()},
+      present_scheduler{instance}, flip_scheduler{instance},
       swapchain{instance, window}, runtime{instance, draw_scheduler},
       rasterizer{std::make_unique<Rasterizer>(instance, draw_scheduler, runtime, liverpool)},
       texture_cache{rasterizer->GetTextureCache()} {
@@ -988,7 +989,7 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
             ImGui::PopStyleVar(3);
             ImGui::PopStyleColor();
         }
-        ImGui::Core::Render(cmdbuf, swapchain_image_view, swapchain.GetExtent());
+        ImGui::Core::Render(cmdbuf.DirectHandle(), swapchain_image_view, swapchain.GetExtent());
 
         if (capture_with_overlays_count > 0) {
             auto& readback = pending_screenshot.emplace(
@@ -1068,6 +1069,10 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
     SubmitInfo info{};
     info.AddWait(swapchain.GetImageAcquiredSemaphore());
     info.AddWait(frame->ready_semaphore, frame->ready_tick);
+    if (frame->ready_semaphore == draw_scheduler.GetWorkSemaphore()->Handle()) {
+        // The same queue would wait for work queued behind it.
+        draw_scheduler.WaitSubmitted(frame->ready_tick);
+    }
     info.AddSignal(swapchain.GetPresentReadySemaphore());
     info.AddSignal(frame->present_done);
     scheduler.Flush(info);
