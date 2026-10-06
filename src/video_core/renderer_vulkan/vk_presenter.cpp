@@ -842,9 +842,17 @@ Frame* Presenter::PrepareBlankFrame(bool present_thread) {
 }
 
 void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame) {
+    // Work queued on the same queue that waits for the frame's has to come after it, and a
+    // freed frame can be recreated before its recorded commands were replayed otherwise.
+    const auto wait_frame_submitted = [&] {
+        if (frame->ready_semaphore == draw_scheduler.GetWorkSemaphore()->Handle()) {
+            draw_scheduler.WaitSubmitted(frame->ready_tick);
+        }
+    };
     // Free the frame for reuse
     const auto free_frame = [&] {
         if (!is_reusing_frame) {
+            wait_frame_submitted();
             last_submit_frame = frame;
             std::scoped_lock fl{free_mutex};
             free_queue.push(frame);
@@ -1069,10 +1077,7 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
     SubmitInfo info{};
     info.AddWait(swapchain.GetImageAcquiredSemaphore());
     info.AddWait(frame->ready_semaphore, frame->ready_tick);
-    if (frame->ready_semaphore == draw_scheduler.GetWorkSemaphore()->Handle()) {
-        // The same queue would wait for work queued behind it.
-        draw_scheduler.WaitSubmitted(frame->ready_tick);
-    }
+    wait_frame_submitted();
     info.AddSignal(swapchain.GetPresentReadySemaphore());
     info.AddSignal(frame->present_done);
     scheduler.Flush(info);

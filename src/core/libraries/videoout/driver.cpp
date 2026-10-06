@@ -169,7 +169,13 @@ int VideoOutDriver::RegisterBuffers(VideoOutPort* port, s32 startIndex, void* co
         port->buffer_labels[startIndex + i] = 0;
         port->SignalVoLabel();
 
-        presenter->RegisterVideoOutSurface(group, address);
+        // Registering can record copies, which only the GPU thread may do.
+        if (liverpool->OnGpuThread()) {
+            presenter->RegisterVideoOutSurface(group, address);
+        } else {
+            liverpool->SendCommand<true>(
+                [&] { presenter->RegisterVideoOutSurface(group, address); });
+        }
         LOG_INFO(Lib_VideoOut, "buffers[{}] = {:#x}", i + startIndex, address);
     }
 

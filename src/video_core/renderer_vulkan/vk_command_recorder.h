@@ -705,14 +705,15 @@ private:
     /// are kept without what goes unused in them, which was most of the data recorded for a draw,
     /// and made again when replayed.
     [[nodiscard]] const u8* PackWrites(const vk::WriteDescriptorSet* writes, u32 count) const {
-        size_t bytes = count * sizeof(PackedWrite);
+        // The infos hold 64-bit handles, so they start 8-byte aligned.
+        size_t bytes = Align8(count * sizeof(PackedWrite));
         for (u32 i = 0; i < count; ++i) {
             bytes += Align8(InfoSize(InfoOf(writes[i].descriptorType), writes[i].descriptorCount));
         }
         stream->Reserve(CommandStream::DataSize(bytes) + CommandStream::MaxCommandSize);
         u8* const data = stream->AllocateData(bytes);
         auto* const packed = reinterpret_cast<PackedWrite*>(data);
-        u8* infos = data + count * sizeof(PackedWrite);
+        u8* infos = data + Align8(count * sizeof(PackedWrite));
         for (u32 i = 0; i < count; ++i) {
             const auto& write = writes[i];
             ASSERT_MSG(!write.pNext, "Descriptor write extensions are not copied");
@@ -741,7 +742,7 @@ private:
             unpacked.resize(count);
         }
         const auto* const packed = reinterpret_cast<const PackedWrite*>(data);
-        const u8* next_info = data + count * sizeof(PackedWrite);
+        const u8* next_info = data + Align8(count * sizeof(PackedWrite));
         for (u32 i = 0; i < count; ++i) {
             const PackedWrite& write = packed[i];
             auto& unpacked_write = unpacked[i];
